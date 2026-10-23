@@ -6,6 +6,7 @@ CREATE TABLE users (
   role ENUM('writer', 'editor', 'admin', 'super_admin') NOT NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
+  token_version INT NOT NULL DEFAULT 0,
   created_by INT UNSIGNED NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

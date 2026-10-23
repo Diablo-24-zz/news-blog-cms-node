@@ -252,7 +252,7 @@ async function resetPassword(actor, userId) {
       throw forbidden("Admins can only reset writer and editor passwords");
     }
     await connection.query(
-      "UPDATE users SET password_hash = ?, must_change_password = TRUE WHERE id = ?",
+      "UPDATE users SET password_hash = ?, must_change_password = TRUE, token_version = token_version + 1 WHERE id = ?",
       [passwordHash, userId],
     );
     await writeAudit(connection, {

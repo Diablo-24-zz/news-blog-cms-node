@@ -14,14 +14,23 @@ async function authenticate(req, _res, next) {
   } catch {
     return next(unauthorized());
   }
+  if (!Number.isInteger(payload.tv) || payload.tv < 0) {
+    return next(unauthorized());
+  }
 
   try {
     const [rows] = await getPool().query(
-      "SELECT id, name, email, role, is_active, must_change_password, created_at, updated_at FROM users WHERE id = ? LIMIT 1",
+      "SELECT id, name, email, role, is_active, must_change_password, token_version, created_at, updated_at FROM users WHERE id = ? LIMIT 1",
       [payload.sub],
     );
     const user = rows[0];
-    if (!user || !user.is_active) return next(unauthorized());
+    if (
+      !user ||
+      !user.is_active ||
+      Number(payload.tv) !== Number(user.token_version)
+    ) {
+      return next(unauthorized());
+    }
     req.user = user;
     return next();
   } catch (error) {

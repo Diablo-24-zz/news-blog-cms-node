@@ -34,9 +34,11 @@ function nextEmail() {
 }
 
 function cookieFor(user) {
-  const token = jwt.sign({ sub: String(user.id) }, config.JWT_SECRET, {
-    expiresIn: "2h",
-  });
+  const token = jwt.sign(
+    { sub: String(user.id), tv: Number(user.token_version ?? 0) },
+    config.JWT_SECRET,
+    { expiresIn: "2h" },
+  );
   return `${COOKIE_NAME}=${token}`;
 }
 
@@ -56,7 +58,7 @@ async function addUser(role, name = `${role} fixture`) {
      VALUES (?, ?, ?, ?, TRUE, FALSE)`,
     [name, email, passwordHash, role],
   );
-  return { id: result.insertId, email, role, name };
+  return { id: result.insertId, email, role, name, token_version: 0 };
 }
 
 async function addPost(author, status = "draft", title = "Integration post") {
@@ -489,6 +491,31 @@ test("deactivated users' previously issued tokens immediately return 401", async
   assert.equal(response.status, 401);
 });
 
+test("tokens without a token version are invalid", async () => {
+  const legacyToken = jwt.sign(
+    { sub: String(users.writer.id) },
+    config.JWT_SECRET,
+    { expiresIn: "2h" },
+  );
+  const response = await request(app)
+    .get("/api/auth/me")
+    .set("Cookie", `${COOKIE_NAME}=${legacyToken}`);
+  assert.equal(response.status, 401);
+});
+
+test("logout revokes the token used for the logout request", async () => {
+  const logoutUser = await addUser("writer", "Logout token user");
+  const cookie = cookieFor(logoutUser);
+  const logout = await request(app)
+    .post("/api/auth/logout")
+    .set("Cookie", cookie);
+  assert.equal(logout.status, 200);
+  const oldSession = await request(app)
+    .get("/api/auth/me")
+    .set("Cookie", cookie);
+  assert.equal(oldSession.status, 401);
+});
+
 test("a role change applies to an already-issued token on the next request", async () => {
   const promoted = await addUser("writer", "Immediately promoted");
   const cookie = cookieFor(promoted);
@@ -761,7 +788,12 @@ test("temporary passwords force a change and are not copied into audit details",
   const [newUsers] = await pool.query("SELECT id FROM users WHERE email = ?", [
     email,
   ]);
-  const temporaryUser = { id: newUsers[0].id, email, role: "writer" };
+  const temporaryUser = {
+    id: newUsers[0].id,
+    email,
+    role: "writer",
+    token_version: 0,
+  };
   const cookie = cookieFor(temporaryUser);
 
   let response = await request(app)
@@ -788,23 +820,44 @@ test("temporary passwords force a change and are not copied into audit details",
       newPassword: "Permanent-Password-53",
     });
   assert.equal(response.status, 200);
+  const freshCookie = response.headers["set-cookie"][0].split(";")[0];
+  const oldSession = await request(app)
+    .get("/api/auth/me")
+    .set("Cookie", cookie);
+  assert.equal(oldSession.status, 401);
+  const continuedSession = await request(app)
+    .get("/api/auth/me")
+    .set("Cookie", freshCookie);
+  assert.equal(continuedSession.status, 200);
   response = await request(app)
     .post("/api/posts")
-    .set("Cookie", cookie)
+    .set("Cookie", freshCookie)
     .send({ title: "Allowed after change", content: "Password changed" });
   assert.equal(response.status, 201);
 });
 
 test("temporary passwords from password reset also require a change", async () => {
   const target = await addUser("writer", "Reset target");
+  const oldCookie = cookieFor(target);
   const reset = await as(
     users.admin,
     { method: "post" },
     `/api/users/${target.id}/reset-password`,
   );
   assert.equal(reset.status, 200);
-  const cookie = cookieFor(target);
-  const blocked = await request(app).get("/api/posts").set("Cookie", cookie);
+  const oldSession = await request(app)
+    .get("/api/auth/me")
+    .set("Cookie", oldCookie);
+  assert.equal(oldSession.status, 401);
+  const login = await request(app).post("/api/auth/login").send({
+    email: target.email,
+    password: reset.body.data.temporaryPassword,
+  });
+  assert.equal(login.status, 200);
+  const freshCookie = login.headers["set-cookie"][0].split(";")[0];
+  const blocked = await request(app)
+    .get("/api/posts")
+    .set("Cookie", freshCookie);
   assert.equal(blocked.status, 403);
   assert.equal(blocked.body.error.code, "PASSWORD_CHANGE_REQUIRED");
 });

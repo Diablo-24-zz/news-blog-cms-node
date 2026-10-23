@@ -26,7 +26,7 @@ function publicUser(user) {
 
 async function login(email, password) {
   const [rows] = await getPool().query(
-    "SELECT id, name, email, password_hash, role, is_active, must_change_password, created_at, updated_at FROM users WHERE email = ? LIMIT 1",
+    "SELECT id, name, email, password_hash, role, is_active, must_change_password, token_version, created_at, updated_at FROM users WHERE email = ? LIMIT 1",
     [email.toLowerCase()],
   );
   const user = rows[0];
@@ -38,9 +38,11 @@ async function login(email, password) {
     throw unauthorized("Invalid email or password");
   }
 
-  const token = jwt.sign({ sub: String(user.id) }, loadConfig().JWT_SECRET, {
-    expiresIn: "2h",
-  });
+  const token = jwt.sign(
+    { sub: String(user.id), tv: Number(user.token_version) },
+    loadConfig().JWT_SECRET,
+    { expiresIn: "2h" },
+  );
   await withTransaction((connection) =>
     writeAudit(connection, {
       userId: user.id,
@@ -69,9 +71,9 @@ async function changePassword(userId, currentPassword, newPassword) {
   }
 
   const passwordHash = await bcrypt.hash(newPassword, 12);
-  await withTransaction(async (connection) => {
+  const tokenVersion = await withTransaction(async (connection) => {
     await connection.query(
-      "UPDATE users SET password_hash = ?, must_change_password = FALSE WHERE id = ?",
+      "UPDATE users SET password_hash = ?, must_change_password = FALSE, token_version = token_version + 1 WHERE id = ?",
       [passwordHash, userId],
     );
     await writeAudit(connection, {
@@ -80,7 +82,32 @@ async function changePassword(userId, currentPassword, newPassword) {
       entity: "user",
       entityId: userId,
     });
+    const [versionRows] = await connection.query(
+      "SELECT token_version FROM users WHERE id = ?",
+      [userId],
+    );
+    return Number(versionRows[0].token_version);
   });
+  return jwt.sign(
+    { sub: String(userId), tv: tokenVersion },
+    loadConfig().JWT_SECRET,
+    { expiresIn: "2h" },
+  );
 }
 
-module.exports = { login, changePassword, publicUser, DUMMY_PASSWORD_HASH };
+async function logout(userId) {
+  await withTransaction((connection) =>
+    connection.query(
+      "UPDATE users SET token_version = token_version + 1 WHERE id = ?",
+      [userId],
+    ),
+  );
+}
+
+module.exports = {
+  login,
+  logout,
+  changePassword,
+  publicUser,
+  DUMMY_PASSWORD_HASH,
+};
