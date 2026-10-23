@@ -550,6 +550,23 @@ test("an admin cannot create admin accounts", async () => {
   assert.equal(response.status, 403);
 });
 
+test("all user detail routes reject invalid ids with 400", async () => {
+  const cases = [
+    as(users.admin, { method: "patch" }, "/api/users/not-an-id/role", {
+      role: "editor",
+    }),
+    as(users.admin, { method: "patch" }, "/api/users/not-an-id/status", {
+      isActive: false,
+    }),
+    as(users.admin, { method: "post" }, "/api/users/not-an-id/reset-password"),
+  ];
+  const responses = await Promise.all(cases);
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    [400, 400, 400],
+  );
+});
+
 test("the last active super admin cannot be demoted or deactivated", async () => {
   let response = await as(
     users.super_admin,

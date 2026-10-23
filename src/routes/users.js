@@ -10,6 +10,9 @@ const userService = require("../services/userService");
 const router = express.Router();
 router.use(authenticate, requirePasswordChanged, authorize("admin"));
 
+const idSchema = Joi.object({
+  id: Joi.number().integer().positive().required(),
+});
 const createSchema = Joi.object({
   name: Joi.string().trim().min(1).max(120).required(),
   email: Joi.string().email().max(255).required(),
@@ -57,6 +60,7 @@ router.post(
 
 router.patch(
   "/:id/role",
+  validate(idSchema, "params"),
   validate(roleSchema),
   asyncHandler(async (req, res) => {
     const user = await userService.changeRole(
@@ -70,6 +74,7 @@ router.patch(
 
 router.patch(
   "/:id/status",
+  validate(idSchema, "params"),
   validate(statusSchema),
   asyncHandler(async (req, res) => {
     const isActive = req.body.isActive ?? req.body.is_active;
@@ -84,6 +89,7 @@ router.patch(
 
 router.post(
   "/:id/reset-password",
+  validate(idSchema, "params"),
   asyncHandler(async (req, res) => {
     const result = await userService.resetPassword(
       req.user,
