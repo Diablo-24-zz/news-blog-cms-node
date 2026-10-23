@@ -47,9 +47,10 @@ function publicUser(user) {
   };
 }
 
-async function login(email, password) {
-  const normalizedEmail = email.toLowerCase();
-  recordLoginAttempt(normalizedEmail);
+async function login(email, password, ip) {
+  const normalizedEmail = email.trim().toLowerCase();
+  const throttleKey = `${normalizedEmail}|${ip || "unknown"}`;
+  recordLoginAttempt(throttleKey);
   const [rows] = await getPool().query(
     "SELECT id, name, email, password_hash, role, is_active, must_change_password, token_version, created_at, updated_at FROM users WHERE email = ? LIMIT 1",
     [normalizedEmail],
@@ -76,7 +77,7 @@ async function login(email, password) {
       entityId: user.id,
     }),
   );
-  loginFailures.delete(normalizedEmail);
+  loginFailures.delete(throttleKey);
   return { token, user: publicUser(user) };
 }
 

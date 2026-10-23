@@ -1221,6 +1221,84 @@ test("successful login clears the per-account failure counter", async () => {
   assert.equal(blocked.status, 429);
 });
 
+test("service login throttling is scoped to normalized email and IP", async () => {
+  const account = await addUser("writer", "Email and IP throttle user");
+  const ipA = "192.0.2.10";
+  const ipB = "198.51.100.22";
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await assert.rejects(
+      authService.login(account.email, "Wrong-Password-53", ipA),
+      (error) => error.status === 401,
+    );
+  }
+  await assert.rejects(
+    authService.login(account.email, "Wrong-Password-53", ipA),
+    (error) => error.status === 429,
+  );
+
+  await assert.rejects(
+    authService.login(account.email, "Wrong-Password-53", ipB),
+    (error) => error.status === 401,
+  );
+  const success = await authService.login(account.email, password, ipB);
+  assert.ok(success.token);
+  await assert.rejects(
+    authService.login(account.email, "Wrong-Password-53", ipA),
+    (error) => error.status === 429,
+  );
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await assert.rejects(
+      authService.login(account.email, "Wrong-Password-53", ipB),
+      (error) => error.status === 401,
+    );
+  }
+  await assert.rejects(
+    authService.login(account.email, "Wrong-Password-53", ipB),
+    (error) => error.status === 429,
+  );
+
+  const unknownEmail = nextEmail();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await assert.rejects(
+      authService.login(unknownEmail, "Wrong-Password-53", ipA),
+      (error) => error.status === 401,
+    );
+  }
+  await assert.rejects(
+    authService.login(unknownEmail, "Wrong-Password-53", ipA),
+    (error) => error.status === 429,
+  );
+
+  const caseAccount = await addUser("writer", "Case normalized throttle user");
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await assert.rejects(
+      authService.login(
+        `  ${caseAccount.email.toUpperCase()}  `,
+        "Wrong-Password-53",
+        ipB,
+      ),
+      (error) => error.status === 401,
+    );
+  }
+  await assert.rejects(
+    authService.login(caseAccount.email, "Wrong-Password-53", ipB),
+    (error) => error.status === 429,
+  );
+
+  const noIpEmail = nextEmail();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await assert.rejects(
+      authService.login(noIpEmail, "Wrong-Password-53"),
+      (error) => error.status === 401,
+    );
+  }
+  await assert.rejects(
+    authService.login(noIpEmail, "Wrong-Password-53"),
+    (error) => error.status === 429,
+  );
+});
+
 test("the existing per-IP login limit remains enabled", async () => {
   const ipLimitedApp = createApp({ enableRateLimits: true });
   for (let attempt = 0; attempt < 10; attempt += 1) {

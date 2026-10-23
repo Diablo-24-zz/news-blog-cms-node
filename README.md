@@ -86,7 +86,7 @@ For a disposable demo, `npm run seed-demo` creates one user per role and prints 
 
 `NODE_ENV`, `PORT`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_NAME_TEST`, `JWT_SECRET` (at least 32 characters), `COOKIE_SECURE`, optional `DB_SSL`, and optional `DB_CA_CERT` are supported. In production, use `COOKIE_SECURE=true`. For a provider whose database certificate chains to a public CA, set `DB_SSL=true`. For a provider with its own CA, set `DB_CA_CERT` to PEM text or a readable file path; it enables verified TLS when `DB_SSL` is unset. For a same-host/private-network database, explicitly set `DB_SSL=false`.
 
-Login failures are throttled after five attempts for a normalized email within 15 minutes. This account counter is in-memory and single-instance; it is not shared across multiple app processes. The existing per-IP login limit remains in place.
+Login failures are throttled after five attempts for each normalized email and client-IP pair within 15 minutes. The in-memory counter is single-instance and resets on restart; it is not shared across multiple app processes. An attacker distributing attempts across many IPs is therefore slowed only by the existing per-IP login limit.
 
 ## API
 
