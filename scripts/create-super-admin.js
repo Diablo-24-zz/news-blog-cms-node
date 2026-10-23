@@ -3,6 +3,7 @@ const { stdin, stdout } = require("node:process");
 const bcrypt = require("bcrypt");
 const { getPool, closePool } = require("../src/config/db");
 const { loadConfig } = require("../src/config/env");
+const { isValidPasswordLength } = require("../src/utils/password");
 
 async function ask(question) {
   const prompt = readline.createInterface({ input: stdin, output: stdout });
@@ -20,9 +21,11 @@ async function main() {
     .trim()
     .toLowerCase();
   const password =
-    process.env.SUPER_ADMIN_PASSWORD || (await ask("Password (8+ chars): "));
-  if (!name.trim() || !email || password.length < 8) {
-    throw new Error("Name, email and an 8+ character password are required");
+    process.env.SUPER_ADMIN_PASSWORD || (await ask("Password (8-72 bytes): "));
+  if (!name.trim() || !email || !isValidPasswordLength(password)) {
+    throw new Error(
+      "Name, email and a password of at least 8 characters and at most 72 UTF-8 bytes are required",
+    );
   }
   const passwordHash = await bcrypt.hash(password, 12);
   await getPool().query(

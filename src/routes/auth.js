@@ -10,15 +10,30 @@ const {
 } = require("../middleware/auth");
 const { sendData } = require("../utils/response");
 const authService = require("../services/authService");
+const { MAX_PASSWORD_BYTES } = require("../utils/password");
 
 const router = express.Router();
+function passwordField() {
+  return Joi.string()
+    .min(8)
+    .custom((value, helpers) => {
+      if (Buffer.byteLength(value, "utf8") > MAX_PASSWORD_BYTES) {
+        return helpers.error("password.maxBytes");
+      }
+      return value;
+    })
+    .messages({
+      "password.maxBytes": "Password must not exceed 72 UTF-8 bytes",
+    });
+}
+
 const loginSchema = Joi.object({
   email: Joi.string().email().max(255).required(),
-  password: Joi.string().min(8).required(),
+  password: passwordField().required(),
 });
 const passwordSchema = Joi.object({
-  currentPassword: Joi.string().min(8).required(),
-  newPassword: Joi.string().min(8).required(),
+  currentPassword: passwordField().required(),
+  newPassword: passwordField().required(),
 });
 
 router.post(

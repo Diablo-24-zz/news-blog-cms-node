@@ -503,6 +503,32 @@ test("tokens without a token version are invalid", async () => {
   assert.equal(response.status, 401);
 });
 
+test("login rejects passwords longer than 72 UTF-8 bytes", async () => {
+  const tooLongAscii = await request(app)
+    .post("/api/auth/login")
+    .send({
+      email: users.writer.email,
+      password: "a".repeat(73),
+    });
+  assert.equal(tooLongAscii.status, 400);
+
+  const tooLongUnicode = await request(app)
+    .post("/api/auth/login")
+    .send({
+      email: users.writer.email,
+      password: "😀".repeat(19),
+    });
+  assert.equal(tooLongUnicode.status, 400);
+
+  const withinByteLimit = await request(app)
+    .post("/api/auth/login")
+    .send({
+      email: users.writer.email,
+      password: "😀".repeat(18),
+    });
+  assert.equal(withinByteLimit.status, 401);
+});
+
 test("logout revokes the token used for the logout request", async () => {
   const logoutUser = await addUser("writer", "Logout token user");
   const cookie = cookieFor(logoutUser);
@@ -884,6 +910,23 @@ test("temporary passwords force a change and are not copied into audit details",
     .set("Cookie", cookie)
     .send({
       currentPassword: temporaryPassword,
+      newPassword: "😀".repeat(19),
+    });
+  assert.equal(response.status, 400);
+  response = await request(app)
+    .post("/api/auth/change-password")
+    .set("Cookie", cookie)
+    .send({
+      currentPassword: "😀".repeat(19),
+      newPassword: "Permanent-Password-53",
+    });
+  assert.equal(response.status, 400);
+
+  response = await request(app)
+    .post("/api/auth/change-password")
+    .set("Cookie", cookie)
+    .send({
+      currentPassword: temporaryPassword,
       newPassword: "Permanent-Password-53",
     });
   assert.equal(response.status, 200);
@@ -979,9 +1022,11 @@ test("search treats LIKE metacharacters as literal text in posts and users", asy
   const post = await addPost(users.writer, "published", `Story ${literal}`);
   const searchableUser = await addUser("writer", `Writer ${literal}`);
 
-  const postSearch = await as(users.admin, { method: "get" }, "/api/posts").query(
-    { search: literal },
-  );
+  const postSearch = await as(
+    users.admin,
+    { method: "get" },
+    "/api/posts",
+  ).query({ search: literal });
   assert.equal(postSearch.status, 200);
   assert.deepEqual(
     postSearch.body.data.map((item) => item.id),
