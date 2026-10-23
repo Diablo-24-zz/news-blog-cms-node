@@ -529,7 +529,7 @@ test("login rejects passwords longer than 72 UTF-8 bytes", async () => {
   assert.equal(withinByteLimit.status, 401);
 });
 
-test("logout revokes the token used for the logout request", async () => {
+test("logout clears the cookie without revoking the same token", async () => {
   const logoutUser = await addUser("writer", "Logout token user");
   const cookie = cookieFor(logoutUser);
   const logout = await request(app)
@@ -539,7 +539,50 @@ test("logout revokes the token used for the logout request", async () => {
   const oldSession = await request(app)
     .get("/api/auth/me")
     .set("Cookie", cookie);
+  assert.equal(oldSession.status, 200);
+});
+
+test("deactivation revokes tokens permanently across reactivation", async () => {
+  const target = await addUser("writer", "Deactivation revocation user");
+  const oldCookie = cookieFor(target);
+  const deactivated = await as(
+    users.admin,
+    { method: "patch" },
+    `/api/users/${target.id}/status`,
+    { isActive: false },
+  );
+  assert.equal(deactivated.status, 200);
+  const [versionRows] = await pool.query(
+    "SELECT token_version FROM users WHERE id = ?",
+    [target.id],
+  );
+  assert.equal(Number(versionRows[0].token_version), 1);
+
+  let oldSession = await request(app)
+    .get("/api/auth/me")
+    .set("Cookie", oldCookie);
   assert.equal(oldSession.status, 401);
+
+  const reactivated = await as(
+    users.admin,
+    { method: "patch" },
+    `/api/users/${target.id}/status`,
+    { isActive: true },
+  );
+  assert.equal(reactivated.status, 200);
+  oldSession = await request(app).get("/api/auth/me").set("Cookie", oldCookie);
+  assert.equal(oldSession.status, 401);
+
+  const freshLogin = await request(app).post("/api/auth/login").send({
+    email: target.email,
+    password,
+  });
+  assert.equal(freshLogin.status, 200);
+  const freshCookie = freshLogin.headers["set-cookie"][0].split(";")[0];
+  const freshSession = await request(app)
+    .get("/api/auth/me")
+    .set("Cookie", freshCookie);
+  assert.equal(freshSession.status, 200);
 });
 
 test("a role change applies to an already-issued token on the next request", async () => {

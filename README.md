@@ -109,6 +109,8 @@ Login failures are throttled after five attempts for a normalized email within 1
 
 Successful responses are `{ data }` or `{ data, pagination }`. Failures are `{ error: { message, fields?, code? } }`.
 
+Logging out clears only the current browser's cookie. A copied token remains valid for up to two hours unless its password is changed or its account is deactivated.
+
 ## Folder tree
 
 ```text

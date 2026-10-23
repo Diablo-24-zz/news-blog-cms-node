@@ -121,18 +121,8 @@ async function changePassword(userId, currentPassword, newPassword) {
   );
 }
 
-async function logout(userId) {
-  await withTransaction((connection) =>
-    connection.query(
-      "UPDATE users SET token_version = token_version + 1 WHERE id = ?",
-      [userId],
-    ),
-  );
-}
-
 module.exports = {
   login,
-  logout,
   changePassword,
   publicUser,
   DUMMY_PASSWORD_HASH,

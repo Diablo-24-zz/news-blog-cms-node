@@ -226,10 +226,11 @@ async function changeStatus(actor, userId, isActive) {
         "LAST_SUPER_ADMIN",
       );
     }
-    await connection.query("UPDATE users SET is_active = ? WHERE id = ?", [
-      isActive ? 1 : 0,
-      userId,
-    ]);
+    const statusUpdate =
+      !isActive && target.is_active
+        ? "UPDATE users SET is_active = ?, token_version = token_version + 1 WHERE id = ?"
+        : "UPDATE users SET is_active = ? WHERE id = ?";
+    await connection.query(statusUpdate, [isActive ? 1 : 0, userId]);
     await writeAudit(connection, {
       userId: actor.id,
       action: "user_status_change",

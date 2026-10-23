@@ -48,15 +48,10 @@ router.post(
 
 router.get("/me", authenticate, (req, res) => sendData(res, req.user));
 
-router.post(
-  "/logout",
-  authenticate,
-  asyncHandler(async (req, res) => {
-    await authService.logout(req.user.id);
-    clearAuthCookie(res);
-    return sendData(res, { loggedOut: true });
-  }),
-);
+router.post("/logout", authenticate, (_req, res) => {
+  clearAuthCookie(res);
+  return sendData(res, { loggedOut: true });
+});
 
 router.post(
   "/change-password",
