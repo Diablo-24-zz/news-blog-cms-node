@@ -47,7 +47,18 @@ function loadConfig() {
     DB_PASSWORD: Joi.string().allow("").default(""),
     DB_NAME: Joi.string().default("news_cms"),
     DB_NAME_TEST: Joi.string().default("news_cms_test"),
-    JWT_SECRET: Joi.string().min(32).required(),
+    JWT_SECRET: Joi.string()
+      .min(32)
+      .custom((value, helpers) => {
+        if (/(replace_with|change_me|your_secret)/i.test(value)) {
+          return helpers.error("any.invalid");
+        }
+        return value;
+      })
+      .messages({
+        "any.invalid": '"JWT_SECRET" must not contain a known placeholder',
+      })
+      .required(),
     COOKIE_SECURE: Joi.boolean().truthy("true").falsy("false").default(false),
     DB_CA_CERT: Joi.string().allow("").optional(),
   }).unknown(true);
