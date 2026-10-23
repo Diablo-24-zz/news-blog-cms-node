@@ -60,7 +60,8 @@ function loadConfig() {
       })
       .required(),
     COOKIE_SECURE: Joi.boolean().truthy("true").falsy("false").default(false),
-    DB_CA_CERT: Joi.string().allow("").optional(),
+    DB_SSL: Joi.boolean().truthy("true").falsy("false").empty("").optional(),
+    DB_CA_CERT: Joi.string().trim().allow("").optional(),
   }).unknown(true);
 
   const { error, value } = schema.validate(process.env, { abortEarly: false });
@@ -75,6 +76,18 @@ function loadConfig() {
   }
   if (value.NODE_ENV === "production" && !value.COOKIE_SECURE) {
     throw new Error("COOKIE_SECURE must be true in production");
+  }
+  if (value.DB_SSL === false && value.DB_CA_CERT) {
+    throw new Error("DB_SSL=false conflicts with DB_CA_CERT");
+  }
+  if (
+    value.NODE_ENV === "production" &&
+    value.DB_SSL === undefined &&
+    !value.DB_CA_CERT
+  ) {
+    throw new Error(
+      "In production set DB_SSL=true (or provide DB_CA_CERT). Set DB_SSL=false only if the database is on the same host or a private network.",
+    );
   }
 
   cachedConfig = value;

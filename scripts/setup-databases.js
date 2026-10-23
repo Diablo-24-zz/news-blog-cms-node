@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const mysql = require("mysql2/promise");
 const { loadConfig } = require("../src/config/env");
+const { buildSslOptions } = require("../src/config/db");
 
 const DATABASES = ["news_cms", "news_cms_test"];
 
@@ -30,6 +31,7 @@ async function main() {
     password: config.DB_PASSWORD,
     timezone: "Z",
     multipleStatements: true,
+    ssl: buildSslOptions(config),
   });
 
   try {
