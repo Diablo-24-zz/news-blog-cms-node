@@ -11,6 +11,7 @@ const {
 } = require("../utils/errors");
 const { getPagination, paginationData } = require("../utils/pagination");
 const { uniqueSlug } = require("../utils/slug");
+const { escapeLike } = require("../utils/search");
 
 const TRANSITIONS = Object.freeze({
   submit: { from: "draft", to: "pending_review" },
@@ -282,7 +283,7 @@ async function listPosts(actor, query) {
   }
   if (query.search) {
     conditions.push("p.title LIKE ?");
-    params.push(`%${query.search}%`);
+    params.push(`%${escapeLike(query.search)}%`);
   }
   if (query.status) {
     conditions.push("p.status = ?");
@@ -505,7 +506,7 @@ function publicWhere(query) {
   const params = [];
   if (query.search) {
     conditions.push("p.title LIKE ?");
-    params.push(`%${query.search}%`);
+    params.push(`%${escapeLike(query.search)}%`);
   }
   if (query.category) {
     conditions.push("(c.slug = ? OR c.id = ?)");

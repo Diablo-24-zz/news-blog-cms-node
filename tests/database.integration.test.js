@@ -974,6 +974,41 @@ test("SQL injection strings are parameterized and sort columns are allowlisted",
   assert.equal(Number(tableRows[0].count), 1);
 });
 
+test("search treats LIKE metacharacters as literal text in posts and users", async () => {
+  const literal = `${emailPrefix}-100%_\\-literal`;
+  const post = await addPost(users.writer, "published", `Story ${literal}`);
+  const searchableUser = await addUser("writer", `Writer ${literal}`);
+
+  const postSearch = await as(users.admin, { method: "get" }, "/api/posts").query(
+    { search: literal },
+  );
+  assert.equal(postSearch.status, 200);
+  assert.deepEqual(
+    postSearch.body.data.map((item) => item.id),
+    [post.id],
+  );
+
+  const publicSearch = await request(app)
+    .get("/api/posts/public")
+    .query({ search: literal });
+  assert.equal(publicSearch.status, 200);
+  assert.deepEqual(
+    publicSearch.body.data.map((item) => item.id),
+    [post.id],
+  );
+
+  const userSearch = await as(
+    users.admin,
+    { method: "get" },
+    "/api/users",
+  ).query({ search: literal });
+  assert.equal(userSearch.status, 200);
+  assert.deepEqual(
+    userSearch.body.data.map((item) => item.id),
+    [searchableUser.id],
+  );
+});
+
 test("XSS-looking post content is returned as plain text", async () => {
   const content = '<img src=x onerror="alert(1)"><script>alert(2)</script>';
   const post = await addPost(users.writer, "published", "xss-plain-text");

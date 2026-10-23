@@ -10,6 +10,7 @@ const {
   notFound,
 } = require("../utils/errors");
 const { getPagination, paginationData } = require("../utils/pagination");
+const { escapeLike } = require("../utils/search");
 const { publicUser } = require("./authService");
 
 const VALID_ROLES = ["writer", "editor", "admin", "super_admin"];
@@ -147,7 +148,8 @@ async function listUsers(query) {
   }
   if (query.search) {
     conditions.push("(name LIKE ? OR email LIKE ?)");
-    params.push(`%${query.search}%`, `%${query.search}%`);
+    const search = `%${escapeLike(query.search)}%`;
+    params.push(search, search);
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const [rows] = await getPool().query(
