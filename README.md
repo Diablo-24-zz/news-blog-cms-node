@@ -52,6 +52,8 @@ stateDiagram-v2
 
 Node.js 20+, Express, mysql2/promise, Joi, bcrypt, jsonwebtoken, cookie-parser, helmet, express-rate-limit, morgan, node:test, supertest, ESLint, and Prettier. There is no ORM, TypeScript, frontend framework, multer, cron, or mailer.
 
+Versions used for the database-backed test run: Node.js v24.17.0 and MySQL 8.0.46.
+
 ## Setup
 
 Copy `.env.example` to `.env` only when you do not already have a configured `.env`. `npm run setup-db` creates `news_cms` and `news_cms_test`, applies the schema, and seeds categories. The setup command is restricted to those names; the application test runner connects only to `DB_NAME_TEST`, which must end in `_test`.
@@ -83,6 +85,8 @@ For a disposable demo, `npm run seed-demo` creates one user per role and prints 
 ## Environment variables
 
 `NODE_ENV`, `PORT`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_NAME_TEST`, `JWT_SECRET` (at least 32 characters), `COOKIE_SECURE`, and optional production `DB_CA_CERT` are supported. In production, use `COOKIE_SECURE=true` and a verified database TLS certificate.
+
+Login failures are throttled after five attempts for a normalized email within 15 minutes. This account counter is in-memory and single-instance; it is not shared across multiple app processes. The existing per-IP login limit remains in place.
 
 ## API
 
