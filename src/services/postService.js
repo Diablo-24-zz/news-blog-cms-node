@@ -13,6 +13,25 @@ const { getPagination, paginationData } = require("../utils/pagination");
 const { uniqueSlug } = require("../utils/slug");
 const { escapeLike } = require("../utils/search");
 
+let postViewKey;
+
+function getPostViewKey() {
+  if (!postViewKey) {
+    postViewKey = crypto
+      .createHmac("sha256", loadConfig().JWT_SECRET)
+      .update("post-views-v1")
+      .digest();
+  }
+  return postViewKey;
+}
+
+function hashPostViewVisitor(ip, userAgent, viewDate) {
+  return crypto
+    .createHmac("sha256", getPostViewKey())
+    .update(`${ip}\n${userAgent}\n${viewDate}`)
+    .digest("hex");
+}
+
 const TRANSITIONS = Object.freeze({
   submit: { from: "draft", to: "pending_review" },
   approve: { from: "pending_review", to: "approved" },
@@ -548,41 +567,66 @@ async function listPublic(query) {
 }
 
 async function getPublicBySlug(slug, ip, userAgent) {
-  const visitorHash = crypto
-    .createHash("sha256")
-    .update(`${ip}${userAgent}${loadConfig().JWT_SECRET}`)
-    .digest("hex");
-  return withTransaction(async (connection) => {
-    const [eligiblePosts] = await connection.query(
-      `SELECT id FROM posts
-        WHERE slug = ? AND status = 'published' AND published_at <= UTC_TIMESTAMP() AND deleted_at IS NULL
-        FOR UPDATE`,
-      [slug],
-    );
-    if (eligiblePosts.length !== 1) throw notFound("Post not found");
+  const pool = getPool();
+  const [eligiblePosts] = await pool.query(
+    `SELECT id FROM posts
+      WHERE slug = ? AND status = 'published' AND published_at <= UTC_TIMESTAMP() AND deleted_at IS NULL`,
+    [slug],
+  );
+  if (eligiblePosts.length !== 1) throw notFound("Post not found");
 
-    const postId = eligiblePosts[0].id;
-    const [view] = await connection.query(
-      "INSERT IGNORE INTO post_views (post_id, visitor_hash, view_date) VALUES (?, ?, UTC_DATE())",
-      [postId, visitorHash],
-    );
-    if (view.affectedRows === 1) {
-      await connection.query(
-        "UPDATE posts SET views = views + 1 WHERE id = ?",
-        [postId],
-      );
+  const viewDate = new Date().toISOString().slice(0, 10);
+  const postId = eligiblePosts[0].id;
+  const visitorHash = hashPostViewVisitor(ip, userAgent, viewDate);
+  const [view] = await pool.query(
+    "INSERT IGNORE INTO post_views (post_id, visitor_hash, view_date) VALUES (?, ?, ?)",
+    [postId, visitorHash, viewDate],
+  );
+  if (view.affectedRows === 1) {
+    // The insert autocommits before the update so its FK shared lock is released.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await pool.query("UPDATE posts SET views = views + 1 WHERE id = ?", [
+          postId,
+        ]);
+        break;
+      } catch (error) {
+        if (error.code !== "ER_LOCK_DEADLOCK" || attempt === 1) throw error;
+      }
     }
+  }
 
-    const [rows] = await connection.query(
-      `SELECT p.id, p.author_id, p.category_id, p.title, p.slug, p.content, p.cover_image,
+  const [rows] = await pool.query(
+    `SELECT p.id, p.author_id, p.category_id, p.title, p.slug, p.content, p.cover_image,
             p.status, p.published_at, p.views, p.created_at, p.updated_at,
             u.name AS author_name, c.name AS category_name, c.slug AS category_slug
        FROM posts p JOIN users u ON u.id = p.author_id LEFT JOIN categories c ON c.id = p.category_id
       WHERE p.slug = ? AND p.status = 'published' AND p.published_at <= UTC_TIMESTAMP() AND p.deleted_at IS NULL`,
-      [slug],
-    );
-    return publicPost(rows[0], await tagsForPost(postId, connection));
-  });
+    [slug],
+  );
+  if (!rows[0]) throw notFound("Post not found");
+  // A concurrent duplicate request may briefly receive a stale count; the DB count is authoritative.
+  return publicPost(rows[0], await tagsForPost(postId));
+}
+
+async function purgeOldPostViews(days = 7) {
+  const [result] = await getPool().query(
+    "DELETE FROM post_views WHERE view_date < DATE_SUB(UTC_DATE(), INTERVAL ? DAY)",
+    [days],
+  );
+  return result.affectedRows;
+}
+
+function startPostViewCleanup() {
+  const purge = () => {
+    purgeOldPostViews().catch((error) => {
+      console.error(error.message);
+    });
+  };
+  purge();
+  const timer = setInterval(purge, 6 * 60 * 60 * 1000);
+  timer.unref();
+  return timer;
 }
 
 module.exports = {
@@ -598,4 +642,7 @@ module.exports = {
   restoreRevision,
   listPublic,
   getPublicBySlug,
+  hashPostViewVisitor,
+  purgeOldPostViews,
+  startPostViewCleanup,
 };

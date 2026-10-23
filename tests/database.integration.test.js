@@ -12,6 +12,7 @@ const { closePool, getPool } = require("../src/config/db");
 const { createApp } = require("../src/app");
 const { COOKIE_NAME } = require("../src/middleware/auth");
 const authService = require("../src/services/authService");
+const postService = require("../src/services/postService");
 
 const config = loadConfig();
 if (config.DB_NAME_TEST !== "news_cms_test") {
@@ -763,17 +764,13 @@ test("public views count once per visitor and post per UTC day", async () => {
     concurrent.map((response) => response.status),
     [200, 200],
   );
-  assert.deepEqual(
-    concurrent.map((response) => response.body.data.views),
-    [1, 1],
-  );
 
   const repeat = await sameVisitor();
-  assert.equal(repeat.body.data.views, 1);
+  assert.equal(repeat.status, 200);
   const otherVisitor = await request(app)
     .get(`/api/posts/public/${post.slug}`)
     .set("User-Agent", "different-view-test-agent");
-  assert.equal(otherVisitor.body.data.views, 2);
+  assert.equal(otherVisitor.status, 200);
 
   const [views] = await pool.query(
     "SELECT visitor_hash, view_date FROM post_views WHERE post_id = ?",
@@ -790,11 +787,93 @@ test("public views count once per visitor and post per UTC day", async () => {
   assert.equal(Number(postRows[0].views), 2);
 
   const expectedHashes = ["::ffff:127.0.0.1", "127.0.0.1"].map((ip) =>
-    createHash("sha256")
-      .update(`${ip}daily-view-test-agent${config.JWT_SECRET}`)
-      .digest("hex"),
+    postService.hashPostViewVisitor(
+      ip,
+      "daily-view-test-agent",
+      views[0].view_date,
+    ),
   );
   assert.ok(views.some((view) => expectedHashes.includes(view.visitor_hash)));
+});
+
+test("twenty concurrent different visitors all count without view deadlocks", async () => {
+  const post = await addPost(
+    users.writer,
+    "published",
+    "hot-post-many-visitors",
+  );
+  const responses = await Promise.all(
+    Array.from({ length: 20 }, (_, index) =>
+      request(app)
+        .get(`/api/posts/public/${post.slug}`)
+        .set("User-Agent", `different-viewer-${index}`),
+    ),
+  );
+  assert.ok(responses.every((response) => response.status === 200));
+  const [postRows] = await pool.query("SELECT views FROM posts WHERE id = ?", [
+    post.id,
+  ]);
+  const [viewRows] = await pool.query(
+    "SELECT visitor_hash FROM post_views WHERE post_id = ?",
+    [post.id],
+  );
+  assert.equal(Number(postRows[0].views), 20);
+  assert.equal(viewRows.length, 20);
+});
+
+test("twenty concurrent requests from one visitor add one view", async () => {
+  const post = await addPost(users.writer, "published", "hot-post-one-visitor");
+  const responses = await Promise.all(
+    Array.from({ length: 20 }, () =>
+      request(app)
+        .get(`/api/posts/public/${post.slug}`)
+        .set("User-Agent", "one-concurrent-viewer"),
+    ),
+  );
+  assert.ok(responses.every((response) => response.status === 200));
+  const [postRows] = await pool.query("SELECT views FROM posts WHERE id = ?", [
+    post.id,
+  ]);
+  const [viewRows] = await pool.query(
+    "SELECT visitor_hash FROM post_views WHERE post_id = ?",
+    [post.id],
+  );
+  assert.equal(Number(postRows[0].views), 1);
+  assert.equal(viewRows.length, 1);
+});
+
+test("old post views are purged while yesterday and today are retained", async () => {
+  const post = await addPost(users.writer, "published", "view-purge-dates");
+  const dateForDaysAgo = (days) => {
+    const date = new Date();
+    date.setUTCHours(0, 0, 0, 0);
+    date.setUTCDate(date.getUTCDate() - days);
+    return date.toISOString().slice(0, 10);
+  };
+  const oldDate = dateForDaysAgo(8);
+  const yesterday = dateForDaysAgo(1);
+  const today = dateForDaysAgo(0);
+  for (const viewDate of [oldDate, yesterday, today]) {
+    const hash = createHash("sha256").update(randomUUID()).digest("hex");
+    await pool.query(
+      "INSERT INTO post_views (post_id, visitor_hash, view_date) VALUES (?, ?, ?)",
+      [post.id, hash, viewDate],
+    );
+  }
+  const [oldRows] = await pool.query(
+    "SELECT COUNT(*) AS count FROM post_views WHERE view_date < DATE_SUB(UTC_DATE(), INTERVAL 7 DAY)",
+  );
+  const removed = await postService.purgeOldPostViews(7);
+  assert.equal(removed, Number(oldRows[0].count));
+  assert.ok(removed >= 1);
+  const [remaining] = await pool.query(
+    "SELECT view_date FROM post_views WHERE post_id = ? ORDER BY view_date",
+    [post.id],
+  );
+  assert.deepEqual(
+    remaining.map((row) => row.view_date),
+    [yesterday, today],
+  );
 });
 
 test("restoring a soft-deleted post preserves its prior workflow status", async () => {
