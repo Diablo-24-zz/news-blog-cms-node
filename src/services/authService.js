@@ -3,13 +3,36 @@ const jwt = require("jsonwebtoken");
 const { getPool, withTransaction } = require("../config/db");
 const { loadConfig } = require("../config/env");
 const { writeAudit } = require("../utils/audit");
-const { unauthorized, badRequest } = require("../utils/errors");
+const { AppError, unauthorized, badRequest } = require("../utils/errors");
 const { toIsoUtc } = require("../utils/time");
 
 // This is used for unknown emails so that the timing of a failed login is similar
 // to the timing of a known email with a wrong password.
 const DUMMY_PASSWORD_HASH =
   "$2b$12$0fomeTvt6rqs2datHptLNuYg89/NNnIHSmvlIWuSKwbB7f2S.VY2a";
+const LOGIN_FAILURE_LIMIT = 5;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_THROTTLE_MESSAGE = "Too many login attempts. Try again later.";
+const loginFailures = new Map();
+
+function pruneLoginFailures(now = Date.now()) {
+  for (const [email, entry] of loginFailures) {
+    if (entry.expiresAt <= now) loginFailures.delete(email);
+  }
+}
+
+function recordLoginAttempt(email, now = Date.now()) {
+  pruneLoginFailures(now);
+  const entry = loginFailures.get(email);
+  if (entry && entry.attempts >= LOGIN_FAILURE_LIMIT) {
+    throw new AppError(429, LOGIN_THROTTLE_MESSAGE, "LOGIN_RATE_LIMITED");
+  }
+  if (!entry || entry.expiresAt <= now) {
+    loginFailures.set(email, { attempts: 1, expiresAt: now + LOGIN_WINDOW_MS });
+    return;
+  }
+  entry.attempts += 1;
+}
 
 function publicUser(user) {
   return {
@@ -25,9 +48,11 @@ function publicUser(user) {
 }
 
 async function login(email, password) {
+  const normalizedEmail = email.toLowerCase();
+  recordLoginAttempt(normalizedEmail);
   const [rows] = await getPool().query(
     "SELECT id, name, email, password_hash, role, is_active, must_change_password, token_version, created_at, updated_at FROM users WHERE email = ? LIMIT 1",
-    [email.toLowerCase()],
+    [normalizedEmail],
   );
   const user = rows[0];
   const passwordMatches = await bcrypt.compare(
@@ -51,6 +76,7 @@ async function login(email, password) {
       entityId: user.id,
     }),
   );
+  loginFailures.delete(normalizedEmail);
   return { token, user: publicUser(user) };
 }
 
@@ -110,4 +136,5 @@ module.exports = {
   changePassword,
   publicUser,
   DUMMY_PASSWORD_HASH,
+  LOGIN_THROTTLE_MESSAGE,
 };

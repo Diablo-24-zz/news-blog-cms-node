@@ -1076,6 +1076,86 @@ test("write rate limiter returns 429 when limiters are enabled in test mode", as
   assert.equal(limited.status, 429);
 });
 
+test("five failed logins throttle a normalized email whether it exists or not", async () => {
+  const unknownEmail = nextEmail();
+  let response;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    response = await request(app).post("/api/auth/login").send({
+      email: unknownEmail,
+      password: "Wrong-Password-53",
+    });
+    assert.equal(response.status, 401);
+  }
+  const unknownBlocked = await request(app)
+    .post("/api/auth/login")
+    .send({ email: unknownEmail.toUpperCase(), password: "Wrong-Password-53" });
+  assert.equal(unknownBlocked.status, 429);
+
+  const knownUser = await addUser("writer", "Account throttle user");
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    response = await request(app).post("/api/auth/login").send({
+      email: knownUser.email,
+      password: "Wrong-Password-53",
+    });
+    assert.equal(response.status, 401);
+  }
+  const knownBlocked = await request(app)
+    .post("/api/auth/login")
+    .send({ email: knownUser.email, password: "Wrong-Password-53" });
+  assert.equal(knownBlocked.status, 429);
+  assert.equal(
+    unknownBlocked.body.error.message,
+    knownBlocked.body.error.message,
+  );
+  assert.equal(
+    knownBlocked.body.error.message,
+    authService.LOGIN_THROTTLE_MESSAGE,
+  );
+});
+
+test("successful login clears the per-account failure counter", async () => {
+  const account = await addUser("writer", "Throttle reset user");
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const failed = await request(app).post("/api/auth/login").send({
+      email: account.email,
+      password: "Wrong-Password-53",
+    });
+    assert.equal(failed.status, 401);
+  }
+  const success = await request(app).post("/api/auth/login").send({
+    email: account.email,
+    password,
+  });
+  assert.equal(success.status, 200);
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const failed = await request(app).post("/api/auth/login").send({
+      email: account.email,
+      password: "Wrong-Password-53",
+    });
+    assert.equal(failed.status, 401);
+  }
+  const blocked = await request(app).post("/api/auth/login").send({
+    email: account.email,
+    password: "Wrong-Password-53",
+  });
+  assert.equal(blocked.status, 429);
+});
+
+test("the existing per-IP login limit remains enabled", async () => {
+  const ipLimitedApp = createApp({ enableRateLimits: true });
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const response = await request(ipLimitedApp)
+      .post("/api/auth/login")
+      .send({ email: nextEmail(), password: "Wrong-Password-53" });
+    assert.equal(response.status, 401, `IP login request ${attempt + 1}`);
+  }
+  const limited = await request(ipLimitedApp)
+    .post("/api/auth/login")
+    .send({ email: nextEmail(), password: "Wrong-Password-53" });
+  assert.equal(limited.status, 429);
+});
+
 test("dummy bcrypt hash is valid and unknown-email timing matches wrong-password timing", async () => {
   const dummyHash = authService.DUMMY_PASSWORD_HASH;
   assert.equal(dummyHash.length, 60);
@@ -1096,7 +1176,7 @@ test("dummy bcrypt hash is valid and unknown-email timing matches wrong-password
 
   const known = [];
   const unknown = [];
-  for (let index = 0; index < 6; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
     known.push(await measure(users.writer.email));
     unknown.push(await measure(`${emailPrefix}-absent-${index}@example.com`));
   }
