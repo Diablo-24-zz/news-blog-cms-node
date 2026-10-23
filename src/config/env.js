@@ -73,6 +73,9 @@ function loadConfig() {
   if (value.NODE_ENV === "test" && !value.DB_NAME_TEST.endsWith("_test")) {
     throw new Error("DB_NAME_TEST must end with _test");
   }
+  if (value.NODE_ENV === "production" && !value.COOKIE_SECURE) {
+    throw new Error("COOKIE_SECURE must be true in production");
+  }
 
   cachedConfig = value;
   return cachedConfig;

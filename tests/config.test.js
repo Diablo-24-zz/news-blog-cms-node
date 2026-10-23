@@ -43,3 +43,28 @@ test("a 32-character non-placeholder JWT_SECRET is accepted", () => {
   const result = loadConfigInChild({ JWT_SECRET: "a".repeat(32) });
   assert.equal(result.status, 0, result.stderr);
 });
+
+test("production requires secure cookies", () => {
+  const insecure = loadConfigInChild({
+    NODE_ENV: "production",
+    COOKIE_SECURE: "false",
+  });
+  assert.notEqual(insecure.status, 0);
+  assert.match(insecure.stderr, /COOKIE_SECURE must be true in production/);
+
+  const secure = loadConfigInChild({
+    NODE_ENV: "production",
+    COOKIE_SECURE: "true",
+  });
+  assert.equal(secure.status, 0, secure.stderr);
+  assert.equal(secure.stdout, "true");
+});
+
+test("non-production keeps COOKIE_SECURE false", () => {
+  const result = loadConfigInChild({
+    NODE_ENV: "development",
+    COOKIE_SECURE: "false",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "false");
+});
