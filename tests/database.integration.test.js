@@ -529,17 +529,53 @@ test("login rejects passwords longer than 72 UTF-8 bytes", async () => {
   assert.equal(withinByteLimit.status, 401);
 });
 
-test("logout clears the cookie without revoking the same token", async () => {
-  const logoutUser = await addUser("writer", "Logout token user");
-  const cookie = cookieFor(logoutUser);
-  const logout = await request(app)
-    .post("/api/auth/logout")
-    .set("Cookie", cookie);
-  assert.equal(logout.status, 200);
-  const oldSession = await request(app)
-    .get("/api/auth/me")
-    .set("Cookie", cookie);
-  assert.equal(oldSession.status, 200);
+test("logout always returns 200 and expires the auth cookie", async () => {
+  const revoked = await addUser("writer", "Revoked logout token user");
+  const revokedCookie = cookieFor(revoked);
+  await pool.query(
+    "UPDATE users SET token_version = token_version + 1 WHERE id = ?",
+    [revoked.id],
+  );
+
+  const deactivated = await addUser("writer", "Inactive logout token user");
+  const deactivatedCookie = cookieFor(deactivated);
+  await pool.query("UPDATE users SET is_active = FALSE WHERE id = ?", [
+    deactivated.id,
+  ]);
+
+  const expiredToken = jwt.sign(
+    { sub: String(users.writer.id), tv: users.writer.token_version },
+    config.JWT_SECRET,
+    { expiresIn: -10 },
+  );
+  const cookies = [
+    cookieFor(users.writer),
+    `${COOKIE_NAME}=${expiredToken}`,
+    revokedCookie,
+    deactivatedCookie,
+    `${COOKIE_NAME}=garbage`,
+    undefined,
+  ];
+
+  for (const cookie of cookies) {
+    let call = request(app).post("/api/auth/logout");
+    if (cookie) call = call.set("Cookie", cookie);
+    const response = await call;
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, { data: { loggedOut: true } });
+    const header = response.headers["set-cookie"]?.find((value) =>
+      value.startsWith(`${COOKIE_NAME}=`),
+    );
+    assert.ok(header, "logout always sends a replacement cookie header");
+    assert.match(header, new RegExp(`^${COOKIE_NAME}=;`));
+    assert.match(header, /Path=\//i);
+    assert.match(header, /HttpOnly/i);
+    assert.match(header, /SameSite=Strict/i);
+    const expiry = header.match(/Expires=([^;]+)/i);
+    assert.ok(expiry);
+    assert.ok(Date.parse(expiry[1]) < Date.now());
+    assert.equal(/;\s*Secure/i.test(header), config.COOKIE_SECURE);
+  }
 });
 
 test("deactivation revokes tokens permanently across reactivation", async () => {

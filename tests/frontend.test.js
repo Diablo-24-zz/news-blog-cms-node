@@ -32,3 +32,16 @@ test("review rejection collects a required comment in an inline form", () => {
   assert.match(browserCode, /comment\.required\s*=\s*true/);
   assert.doesNotMatch(browserCode, /window\.prompt\(/);
 });
+
+test("logout redirects from a finally block even when the API request fails", () => {
+  const handler = browserCode.match(
+    /logout\.addEventListener\("click", async \(\) => \{([\s\S]*?)\n\s*\}\);/,
+  );
+  assert.ok(handler);
+  assert.match(handler[1], /try\s*\{/);
+  assert.match(handler[1], /catch\s*\{\s*\/\//);
+  assert.match(
+    handler[1],
+    /finally\s*\{[\s\S]*window\.location\.href\s*=\s*"\/index\.html"/,
+  );
+});

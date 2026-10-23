@@ -50,23 +50,25 @@ function requirePasswordChanged(req, _res, next) {
   return next();
 }
 
-function setAuthCookie(res, token) {
+function authCookieOptions() {
   const config = loadConfig();
-  res.cookie(COOKIE_NAME, token, {
+  return {
+    path: "/",
     httpOnly: true,
     sameSite: "strict",
     secure: config.COOKIE_SECURE,
+  };
+}
+
+function setAuthCookie(res, token) {
+  res.cookie(COOKIE_NAME, token, {
+    ...authCookieOptions(),
     maxAge: 2 * 60 * 60 * 1000,
   });
 }
 
 function clearAuthCookie(res) {
-  const config = loadConfig();
-  res.clearCookie(COOKIE_NAME, {
-    httpOnly: true,
-    sameSite: "strict",
-    secure: config.COOKIE_SECURE,
-  });
+  res.clearCookie(COOKIE_NAME, authCookieOptions());
 }
 
 module.exports = {

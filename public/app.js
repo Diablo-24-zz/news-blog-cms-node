@@ -89,8 +89,13 @@ async function setupNav() {
     });
     const logout = node("button", "Log out");
     logout.addEventListener("click", async () => {
-      await api("/api/auth/logout", { method: "POST" });
-      window.location.href = "/index.html";
+      try {
+        await api("/api/auth/logout", { method: "POST" });
+      } catch {
+        // The server may reject other session requests after expiry or revocation.
+      } finally {
+        window.location.href = "/index.html";
+      }
     });
     nav.append(logout);
     return me;

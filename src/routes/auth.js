@@ -48,7 +48,7 @@ router.post(
 
 router.get("/me", authenticate, (req, res) => sendData(res, req.user));
 
-router.post("/logout", authenticate, (_req, res) => {
+router.post("/logout", (_req, res) => {
   clearAuthCookie(res);
   return sendData(res, { loggedOut: true });
 });
