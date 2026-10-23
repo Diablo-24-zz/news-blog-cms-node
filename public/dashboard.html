@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>News CMS · Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body data-page="dashboard">
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/index.html">News CMS</a>
+        <nav class="site-nav" aria-label="Main navigation"></nav>
+      </div>
+    </header>
+    <main class="page">
+      <h1>My posts</h1>
+      <div class="grid">
+        <form id="post-form" class="card stack">
+          <h2>New draft</h2>
+          <input name="postId" type="hidden" />
+          <label>Title<input name="title" maxlength="255" required /></label
+          ><label>Content<textarea name="content" required></textarea></label
+          ><label>Cover image URL<input name="cover_image" type="url" /></label
+          ><label
+            >Tags (comma separated)<input
+              name="tags"
+              placeholder="news, local" /></label
+          ><button type="submit">Save draft</button>
+        </form>
+        <section id="my-posts" class="stack" aria-live="polite">
+          <p class="muted">Loading…</p>
+        </section>
+      </div>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

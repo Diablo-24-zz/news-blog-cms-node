@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>News CMS · Admin</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body data-page="admin">
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/index.html">News CMS</a>
+        <nav class="site-nav" aria-label="Main navigation"></nav>
+      </div>
+    </header>
+    <main class="page stack">
+      <h1>Administration</h1>
+      <div class="grid">
+        <form id="user-form" class="card stack">
+          <h2>Create user</h2>
+          <label>Name<input name="name" required /></label
+          ><label>Email<input name="email" type="email" required /></label
+          ><label
+            >Role<select name="role">
+              <option value="writer">Writer</option>
+              <option value="editor">Editor</option>
+              <option value="admin">Admin</option>
+              <option value="super_admin">Super admin</option>
+            </select></label
+          ><button type="submit">Create and show temporary password</button>
+        </form>
+        <form id="category-form" class="card stack">
+          <h2>Create category</h2>
+          <label>Name<input name="name" required /></label
+          ><label>Slug (optional)<input name="slug" /></label
+          ><button type="submit">Create category</button>
+          <h3>Categories</h3>
+          <ul id="categories"></ul>
+        </form>
+      </div>
+      <section class="card">
+        <h2>Users</h2>
+        <div class="table-wrap">
+          <table id="users-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Password</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Deleted posts</h2>
+        <ul id="deleted-posts"></ul>
+      </section>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

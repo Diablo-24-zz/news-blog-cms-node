@@ -1,0 +1,917 @@
+process.env.NODE_ENV = "test";
+
+const assert = require("node:assert/strict");
+const { randomUUID } = require("node:crypto");
+const { performance } = require("node:perf_hooks");
+const { after, before, test } = require("node:test");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const request = require("supertest");
+const { loadConfig } = require("../src/config/env");
+const { closePool, getPool } = require("../src/config/db");
+const { createApp } = require("../src/app");
+const { COOKIE_NAME } = require("../src/middleware/auth");
+const authService = require("../src/services/authService");
+
+const config = loadConfig();
+if (config.DB_NAME_TEST !== "news_cms_test") {
+  throw new Error(
+    "Integration tests refuse to run unless DB_NAME_TEST is news_cms_test",
+  );
+}
+
+const app = createApp({ enableRateLimits: false });
+const roles = ["writer", "editor", "admin", "super_admin"];
+const emailPrefix = `cmsit${randomUUID().replaceAll("-", "")}`;
+const password = "Integration-Password-47";
+const users = {};
+let pool;
+let userCounter = 0;
+
+function nextEmail() {
+  userCounter += 1;
+  return `${emailPrefix}${userCounter}@example.com`;
+}
+
+function cookieFor(user) {
+  const token = jwt.sign({ sub: String(user.id) }, config.JWT_SECRET, {
+    expiresIn: "2h",
+  });
+  return `${COOKIE_NAME}=${token}`;
+}
+
+function as(user, action, url, body) {
+  const client = request(action.app || app);
+  let call = client[action.method](url).set("Cookie", cookieFor(user));
+  if (body !== undefined) call = call.send(body);
+  return call;
+}
+
+async function addUser(role, name = `${role} fixture`) {
+  const email = nextEmail();
+  const passwordHash = await bcrypt.hash(password, 12);
+  const [result] = await pool.query(
+    `INSERT INTO users
+      (name, email, password_hash, role, is_active, must_change_password)
+     VALUES (?, ?, ?, ?, TRUE, FALSE)`,
+    [name, email, passwordHash, role],
+  );
+  return { id: result.insertId, email, role, name };
+}
+
+async function addPost(author, status = "draft", title = "Integration post") {
+  const slug = `${emailPrefix}-${randomUUID().slice(0, 8)}`;
+  const [result] = await pool.query(
+    `INSERT INTO posts (author_id, title, slug, content, status, published_at)
+     VALUES (?, ?, ?, ?, ?, IF(? = 'published', UTC_TIMESTAMP(), NULL))`,
+    [author.id, title, slug, `Content for ${title}`, status, status],
+  );
+  return { id: result.insertId, slug, authorId: author.id, status, title };
+}
+
+before(async () => {
+  pool = getPool();
+  const [databaseRows] = await pool.query("SELECT DATABASE() AS database_name");
+  if (databaseRows[0].database_name !== "news_cms_test") {
+    pool = null;
+    await closePool();
+    throw new Error(
+      "Integration tests refuse to write unless connected to news_cms_test",
+    );
+  }
+
+  users.writer = await addUser("writer", "Writer One");
+  users.writer2 = await addUser("writer", "Writer Two");
+  users.editor = await addUser("editor", "Editor One");
+  users.admin = await addUser("admin", "Admin One");
+  users.super_admin = await addUser("super_admin", "Super Admin One");
+  users.super_admin2 = await addUser("super_admin", "Super Admin Two");
+});
+
+after(async () => {
+  if (!pool) return;
+  try {
+    const pattern = `${emailPrefix}%`;
+    const [rows] = await pool.query("SELECT id FROM users WHERE email LIKE ?", [
+      pattern,
+    ]);
+    const ids = rows.map((row) => row.id);
+    if (ids.length) {
+      const marks = ids.map(() => "?").join(", ");
+      await pool.query(
+        `DELETE FROM posts WHERE author_id IN (${marks}) OR reviewed_by IN (${marks})`,
+        [...ids, ...ids],
+      );
+      await pool.query(
+        `DELETE FROM audit_logs WHERE user_id IN (${marks})`,
+        ids,
+      );
+      await pool.query(`DELETE FROM categories WHERE name LIKE ?`, [pattern]);
+      await pool.query(
+        "UPDATE users SET created_by = NULL WHERE email LIKE ?",
+        [pattern],
+      );
+      await pool.query("DELETE FROM users WHERE email LIKE ?", [pattern]);
+    }
+    const [remaining] = await pool.query(
+      "SELECT COUNT(*) AS count FROM users WHERE email LIKE ?",
+      [pattern],
+    );
+    assert.equal(
+      Number(remaining[0].count),
+      0,
+      "all integration users are deleted",
+    );
+  } finally {
+    await closePool();
+    pool = null;
+  }
+});
+
+test("permission matrix: every role against each protected action", async () => {
+  const expected = {
+    createDraft: { writer: 201, editor: 201, admin: 201, super_admin: 201 },
+    editOwnDraft: { writer: 200, editor: 200, admin: 200, super_admin: 200 },
+    editOtherDraft: { writer: 404, editor: 200, admin: 200, super_admin: 200 },
+    submitOwnDraft: { writer: 200, editor: 200, admin: 200, super_admin: 200 },
+    approveOther: { writer: 403, editor: 200, admin: 200, super_admin: 200 },
+    rejectOther: { writer: 403, editor: 200, admin: 200, super_admin: 200 },
+    publishApproved: { writer: 403, editor: 200, admin: 200, super_admin: 200 },
+    archivePublished: {
+      writer: 403,
+      editor: 200,
+      admin: 200,
+      super_admin: 200,
+    },
+    deleteOwnDraft: { writer: 200, editor: 200, admin: 200, super_admin: 200 },
+    deleteAny: { writer: 404, editor: 404, admin: 200, super_admin: 200 },
+    restoreAny: { writer: 403, editor: 403, admin: 200, super_admin: 200 },
+    manageCategories: {
+      writer: 403,
+      editor: 403,
+      admin: 201,
+      super_admin: 201,
+    },
+    createWriter: { writer: 403, editor: 403, admin: 201, super_admin: 201 },
+    createAdmin: { writer: 403, editor: 403, admin: 403, super_admin: 201 },
+    changeWriterRole: {
+      writer: 403,
+      editor: 403,
+      admin: 200,
+      super_admin: 200,
+    },
+    deactivateWriter: {
+      writer: 403,
+      editor: 403,
+      admin: 200,
+      super_admin: 200,
+    },
+    viewAudit: { writer: 403, editor: 403, admin: 403, super_admin: 200 },
+  };
+
+  for (const role of roles) {
+    const actor = users[role];
+    let post;
+    let target;
+    let response;
+
+    response = await as(actor, { method: "post" }, "/api/posts", {
+      title: `Matrix created ${role}`,
+      content: "A new draft",
+    });
+    assert.equal(
+      response.status,
+      expected.createDraft[role],
+      `${role}: create draft`,
+    );
+
+    post = await addPost(actor, "draft", `edit-own-${role}`);
+    response = await as(actor, { method: "put" }, `/api/posts/${post.id}`, {
+      title: `Edited own ${role}`,
+      content: "Edited content",
+    });
+    assert.equal(
+      response.status,
+      expected.editOwnDraft[role],
+      `${role}: edit own draft`,
+    );
+
+    post = await addPost(users.writer, "draft", `edit-other-${role}`);
+    if (role === "writer") {
+      post = await addPost(users.writer2, "draft", `edit-other-${role}`);
+    }
+    response = await as(actor, { method: "put" }, `/api/posts/${post.id}`, {
+      content: "Editing another author's story",
+    });
+    assert.equal(
+      response.status,
+      expected.editOtherDraft[role],
+      `${role}: edit other draft`,
+    );
+
+    post = await addPost(actor, "draft", `submit-${role}`);
+    response = await as(
+      actor,
+      { method: "patch" },
+      `/api/posts/${post.id}/submit`,
+    );
+    assert.equal(
+      response.status,
+      expected.submitOwnDraft[role],
+      `${role}: submit own draft`,
+    );
+
+    post = await addPost(users.writer, "pending_review", `approve-${role}`);
+    response = await as(
+      actor,
+      { method: "patch" },
+      `/api/posts/${post.id}/approve`,
+    );
+    assert.equal(
+      response.status,
+      expected.approveOther[role],
+      `${role}: approve another post`,
+    );
+
+    post = await addPost(users.writer, "pending_review", `reject-${role}`);
+    response = await as(
+      actor,
+      { method: "patch" },
+      `/api/posts/${post.id}/reject`,
+      { review_comment: "Needs clearer sourcing" },
+    );
+    assert.equal(
+      response.status,
+      expected.rejectOther[role],
+      `${role}: reject another post`,
+    );
+
+    post = await addPost(users.writer, "approved", `publish-${role}`);
+    response = await as(
+      actor,
+      { method: "patch" },
+      `/api/posts/${post.id}/publish`,
+      {},
+    );
+    assert.equal(
+      response.status,
+      expected.publishApproved[role],
+      `${role}: publish approved post`,
+    );
+
+    post = await addPost(users.writer, "published", `archive-${role}`);
+    response = await as(
+      actor,
+      { method: "patch" },
+      `/api/posts/${post.id}/archive`,
+    );
+    assert.equal(
+      response.status,
+      expected.archivePublished[role],
+      `${role}: archive published post`,
+    );
+
+    post = await addPost(actor, "draft", `delete-own-${role}`);
+    response = await as(actor, { method: "delete" }, `/api/posts/${post.id}`);
+    assert.equal(
+      response.status,
+      expected.deleteOwnDraft[role],
+      `${role}: delete own draft`,
+    );
+
+    post = await addPost(users.writer, "approved", `delete-any-${role}`);
+    if (role === "writer") {
+      post = await addPost(users.writer2, "approved", `delete-any-${role}`);
+    }
+    response = await as(actor, { method: "delete" }, `/api/posts/${post.id}`);
+    assert.equal(
+      response.status,
+      expected.deleteAny[role],
+      `${role}: delete any post`,
+    );
+
+    post = await addPost(users.writer, "draft", `restore-${role}`);
+    await pool.query(
+      "UPDATE posts SET deleted_at = UTC_TIMESTAMP() WHERE id = ?",
+      [post.id],
+    );
+    response = await as(
+      actor,
+      { method: "post" },
+      `/api/posts/${post.id}/restore`,
+    );
+    assert.equal(
+      response.status,
+      expected.restoreAny[role],
+      `${role}: restore any post`,
+    );
+
+    const categoryName = `${emailPrefix}-${role}-category`;
+    response = await as(actor, { method: "post" }, "/api/categories", {
+      name: categoryName,
+    });
+    assert.equal(
+      response.status,
+      expected.manageCategories[role],
+      `${role}: manage categories`,
+    );
+
+    response = await as(actor, { method: "post" }, "/api/users", {
+      name: `Matrix writer ${role}`,
+      email: nextEmail(),
+      role: "writer",
+    });
+    assert.equal(
+      response.status,
+      expected.createWriter[role],
+      `${role}: create writer`,
+    );
+
+    response = await as(actor, { method: "post" }, "/api/users", {
+      name: `Matrix admin ${role}`,
+      email: nextEmail(),
+      role: "admin",
+    });
+    assert.equal(
+      response.status,
+      expected.createAdmin[role],
+      `${role}: create admin`,
+    );
+
+    target = await addUser("writer", `Role target ${role}`);
+    response = await as(
+      actor,
+      { method: "patch" },
+      `/api/users/${target.id}/role`,
+      {
+        role: "editor",
+      },
+    );
+    assert.equal(
+      response.status,
+      expected.changeWriterRole[role],
+      `${role}: change writer role`,
+    );
+
+    target = await addUser("writer", `Status target ${role}`);
+    response = await as(
+      actor,
+      { method: "patch" },
+      `/api/users/${target.id}/status`,
+      {
+        isActive: false,
+      },
+    );
+    assert.equal(
+      response.status,
+      expected.deactivateWriter[role],
+      `${role}: deactivate writer`,
+    );
+
+    response = await as(actor, { method: "get" }, "/api/audit-logs");
+    assert.equal(
+      response.status,
+      expected.viewAudit[role],
+      `${role}: view audit log`,
+    );
+  }
+});
+
+test("workflow accepts valid transitions and rejects invalid ones", async () => {
+  const invalid = await addPost(users.writer, "draft", "invalid-approve");
+  let response = await as(
+    users.editor,
+    { method: "patch" },
+    `/api/posts/${invalid.id}/approve`,
+  );
+  assert.equal(response.status, 409);
+
+  const missingComment = await addPost(
+    users.writer,
+    "pending_review",
+    "missing-comment",
+  );
+  response = await as(
+    users.editor,
+    { method: "patch" },
+    `/api/posts/${missingComment.id}/reject`,
+    {},
+  );
+  assert.equal(response.status, 400);
+
+  const post = await addPost(users.writer, "draft", "valid-workflow");
+  response = await as(
+    users.writer,
+    { method: "patch" },
+    `/api/posts/${post.id}/submit`,
+  );
+  assert.equal(response.status, 200);
+  response = await as(
+    users.editor,
+    { method: "patch" },
+    `/api/posts/${post.id}/approve`,
+  );
+  assert.equal(response.status, 200);
+  response = await as(
+    users.editor,
+    { method: "patch" },
+    `/api/posts/${post.id}/publish`,
+  );
+  assert.equal(response.status, 200);
+  response = await as(
+    users.editor,
+    { method: "patch" },
+    `/api/posts/${post.id}/archive`,
+  );
+  assert.equal(response.status, 200);
+  response = await as(
+    users.editor,
+    { method: "patch" },
+    `/api/posts/${post.id}/archive`,
+  );
+  assert.equal(response.status, 409);
+});
+
+test("concurrent approve has exactly one success and one conflict", async () => {
+  const post = await addPost(
+    users.writer,
+    "pending_review",
+    "concurrent-approve",
+  );
+  const responses = await Promise.all([
+    as(users.editor, { method: "patch" }, `/api/posts/${post.id}/approve`),
+    as(users.admin, { method: "patch" }, `/api/posts/${post.id}/approve`),
+  ]);
+  assert.deepEqual(
+    responses.map((response) => response.status).sort(),
+    [200, 409],
+  );
+});
+
+test("reviewing an own post is forbidden except for super admin", async () => {
+  const editorPost = await addPost(
+    users.editor,
+    "pending_review",
+    "editor-own-review",
+  );
+  let response = await as(
+    users.editor,
+    { method: "patch" },
+    `/api/posts/${editorPost.id}/approve`,
+  );
+  assert.equal(response.status, 403);
+
+  const superPost = await addPost(
+    users.super_admin,
+    "pending_review",
+    "super-admin-own-review",
+  );
+  response = await as(
+    users.super_admin,
+    { method: "patch" },
+    `/api/posts/${superPost.id}/approve`,
+  );
+  assert.equal(response.status, 200);
+  const [auditRows] = await pool.query(
+    "SELECT id FROM audit_logs WHERE user_id = ? AND action = 'post_approve' AND entity_id = ?",
+    [users.super_admin.id, superPost.id],
+  );
+  assert.equal(auditRows.length, 1);
+});
+
+test("deactivated users' previously issued tokens immediately return 401", async () => {
+  const deactivated = await addUser("writer", "Deactivated token user");
+  const cookie = cookieFor(deactivated);
+  await pool.query("UPDATE users SET is_active = FALSE WHERE id = ?", [
+    deactivated.id,
+  ]);
+  const response = await request(app).get("/api/auth/me").set("Cookie", cookie);
+  assert.equal(response.status, 401);
+});
+
+test("a role change applies to an already-issued token on the next request", async () => {
+  const promoted = await addUser("writer", "Immediately promoted");
+  const cookie = cookieFor(promoted);
+  const post = await addPost(
+    users.writer,
+    "pending_review",
+    "role-change-review",
+  );
+  let response = await request(app)
+    .patch(`/api/posts/${post.id}/approve`)
+    .set("Cookie", cookie);
+  assert.equal(response.status, 403);
+  response = await as(
+    users.admin,
+    { method: "patch" },
+    `/api/users/${promoted.id}/role`,
+    { role: "editor" },
+  );
+  assert.equal(response.status, 200);
+  response = await request(app)
+    .patch(`/api/posts/${post.id}/approve`)
+    .set("Cookie", cookie);
+  assert.equal(response.status, 200);
+});
+
+test("an admin cannot create admin accounts", async () => {
+  const response = await as(users.admin, { method: "post" }, "/api/users", {
+    name: "Forbidden admin",
+    email: nextEmail(),
+    role: "admin",
+  });
+  assert.equal(response.status, 403);
+});
+
+test("the last active super admin cannot be demoted or deactivated", async () => {
+  let response = await as(
+    users.super_admin,
+    { method: "patch" },
+    `/api/users/${users.super_admin.id}/role`,
+    { role: "admin" },
+  );
+  assert.equal(response.status, 403, "users cannot change their own role");
+  response = await as(
+    users.super_admin,
+    { method: "patch" },
+    `/api/users/${users.super_admin.id}/status`,
+    { isActive: false },
+  );
+  assert.equal(response.status, 403, "users cannot deactivate themselves");
+
+  const concurrent = await Promise.all([
+    as(
+      users.super_admin,
+      { method: "patch" },
+      `/api/users/${users.super_admin2.id}/status`,
+      { isActive: false },
+    ),
+    as(
+      users.super_admin2,
+      { method: "patch" },
+      `/api/users/${users.super_admin.id}/status`,
+      { isActive: false },
+    ),
+  ]);
+  assert.deepEqual(concurrent.map((item) => item.status).sort(), [200, 409]);
+  const [activeRows] = await pool.query(
+    "SELECT COUNT(*) AS total FROM users WHERE role = 'super_admin' AND is_active = TRUE",
+  );
+  assert.equal(Number(activeRows[0].total), 1);
+  await pool.query("UPDATE users SET is_active = TRUE WHERE id IN (?, ?)", [
+    users.super_admin.id,
+    users.super_admin2.id,
+  ]);
+});
+
+test("writers cannot view another writer's post and receive 404", async () => {
+  const post = await addPost(users.writer2, "draft", "private-to-writer-two");
+  const response = await as(
+    users.writer,
+    { method: "get" },
+    `/api/posts/${post.id}`,
+  );
+  assert.equal(response.status, 404);
+});
+
+test("public endpoints hide unpublished, deleted, and future-scheduled posts", async () => {
+  const draft = await addPost(users.writer, "draft", "hidden-unpublished");
+  const deleted = await addPost(users.writer, "published", "hidden-deleted");
+  const future = await addPost(users.writer, "published", "hidden-future");
+  await pool.query(
+    "UPDATE posts SET deleted_at = UTC_TIMESTAMP() WHERE id = ?",
+    [deleted.id],
+  );
+  await pool.query(
+    "UPDATE posts SET published_at = '2099-01-01 00:00:00' WHERE id = ?",
+    [future.id],
+  );
+
+  for (const post of [draft, deleted, future]) {
+    const response = await request(app).get(`/api/posts/public/${post.slug}`);
+    assert.equal(response.status, 404, post.title);
+  }
+  const list = await request(app).get("/api/posts/public").query({
+    search: "hidden-",
+  });
+  assert.equal(list.status, 200);
+  assert.equal(list.body.data.length, 0);
+});
+
+test("restoring a soft-deleted post preserves its prior workflow status", async () => {
+  const post = await addPost(
+    users.writer,
+    "approved",
+    "restore-preserves-status",
+  );
+  let response = await as(
+    users.admin,
+    { method: "delete" },
+    `/api/posts/${post.id}`,
+  );
+  assert.equal(response.status, 200);
+  response = await as(
+    users.admin,
+    { method: "post" },
+    `/api/posts/${post.id}/restore`,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.status, "approved");
+  assert.equal(response.body.data.deleted_at, null);
+});
+
+test("slug collisions get suffixes and a published post keeps its slug", async () => {
+  const title = `Collision story ${emailPrefix}`;
+  const first = await as(users.writer, { method: "post" }, "/api/posts", {
+    title,
+    content: "First copy",
+  });
+  const second = await as(users.writer, { method: "post" }, "/api/posts", {
+    title,
+    content: "Second copy",
+  });
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201);
+  assert.equal(second.body.data.slug, `${first.body.data.slug}-2`);
+
+  const postId = first.body.data.id;
+  await as(users.writer, { method: "patch" }, `/api/posts/${postId}/submit`);
+  await as(users.editor, { method: "patch" }, `/api/posts/${postId}/approve`);
+  const published = await as(
+    users.editor,
+    { method: "patch" },
+    `/api/posts/${postId}/publish`,
+    {},
+  );
+  assert.equal(published.status, 200);
+  const slug = published.body.data.slug;
+  const edited = await as(
+    users.admin,
+    { method: "put" },
+    `/api/posts/${postId}`,
+    {
+      title: `${title} updated after publication`,
+    },
+  );
+  assert.equal(edited.status, 200);
+  assert.equal(edited.body.data.slug, slug);
+});
+
+test("scheduled publication requires a timezone and stores the instant in UTC", async () => {
+  const post = await addPost(users.writer, "draft", "scheduled-utc");
+  await as(users.writer, { method: "patch" }, `/api/posts/${post.id}/submit`);
+  await as(users.editor, { method: "patch" }, `/api/posts/${post.id}/approve`);
+
+  let response = await as(
+    users.editor,
+    { method: "patch" },
+    `/api/posts/${post.id}/publish`,
+    { publish_at: "2099-01-01T00:00:00" },
+  );
+  assert.equal(response.status, 400);
+
+  response = await as(
+    users.editor,
+    { method: "patch" },
+    `/api/posts/${post.id}/publish`,
+    { publish_at: "2099-01-01T00:00:00+05:30" },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.published_at, "2098-12-31T18:30:00.000Z");
+  response = await request(app).get(`/api/posts/public/${post.slug}`);
+  assert.equal(response.status, 404);
+});
+
+test("content edits save revisions and restoring a revision creates another revision", async () => {
+  const post = await addPost(users.writer, "draft", "revision-original");
+  const oldContent = `Content for ${post.title}`;
+  const update = await as(
+    users.writer,
+    { method: "put" },
+    `/api/posts/${post.id}`,
+    {
+      title: "revision-updated",
+      content: "Updated text",
+    },
+  );
+  assert.equal(update.status, 200);
+  let revisions = await as(
+    users.writer,
+    { method: "get" },
+    `/api/posts/${post.id}/revisions`,
+  );
+  assert.equal(revisions.status, 200);
+  assert.equal(revisions.body.data.length, 1);
+  const oldRevisionId = revisions.body.data[0].id;
+  assert.equal(revisions.body.data[0].content, oldContent);
+
+  const restored = await as(
+    users.admin,
+    { method: "post" },
+    `/api/posts/${post.id}/revisions/${oldRevisionId}/restore`,
+  );
+  assert.equal(restored.status, 200);
+  assert.equal(restored.body.data.title, post.title);
+  assert.equal(restored.body.data.content, oldContent);
+  revisions = await as(
+    users.writer,
+    { method: "get" },
+    `/api/posts/${post.id}/revisions`,
+  );
+  assert.equal(revisions.body.data.length, 2);
+});
+
+test("a category in use by a post cannot be deleted", async () => {
+  const categoryResponse = await as(
+    users.admin,
+    { method: "post" },
+    "/api/categories",
+    { name: `${emailPrefix}-protected-category` },
+  );
+  assert.equal(categoryResponse.status, 201);
+  const postResponse = await as(
+    users.writer,
+    { method: "post" },
+    "/api/posts",
+    {
+      title: "category-in-use",
+      content: "Uses a category",
+      category_id: categoryResponse.body.data.id,
+    },
+  );
+  assert.equal(postResponse.status, 201);
+  const deleted = await as(
+    users.admin,
+    { method: "delete" },
+    `/api/categories/${categoryResponse.body.data.id}`,
+  );
+  assert.equal(deleted.status, 409);
+});
+
+test("temporary passwords force a change and are not copied into audit details", async () => {
+  const email = nextEmail();
+  const created = await as(users.admin, { method: "post" }, "/api/users", {
+    name: "Temporary account",
+    email,
+    role: "writer",
+  });
+  assert.equal(created.status, 201);
+  const temporaryPassword = created.body.data.temporaryPassword;
+  assert.ok(temporaryPassword);
+  const [newUsers] = await pool.query("SELECT id FROM users WHERE email = ?", [
+    email,
+  ]);
+  const temporaryUser = { id: newUsers[0].id, email, role: "writer" };
+  const cookie = cookieFor(temporaryUser);
+
+  let response = await request(app)
+    .post("/api/posts")
+    .set("Cookie", cookie)
+    .send({ title: "Blocked until changed", content: "Temporary password" });
+  assert.equal(response.status, 403);
+  assert.equal(response.body.error.code, "PASSWORD_CHANGE_REQUIRED");
+
+  const [auditRows] = await pool.query(
+    "SELECT details FROM audit_logs WHERE entity = 'user' AND entity_id = ? AND action = 'user_create'",
+    [temporaryUser.id],
+  );
+  assert.equal(
+    JSON.stringify(auditRows[0].details).includes(temporaryPassword),
+    false,
+  );
+
+  response = await request(app)
+    .post("/api/auth/change-password")
+    .set("Cookie", cookie)
+    .send({
+      currentPassword: temporaryPassword,
+      newPassword: "Permanent-Password-53",
+    });
+  assert.equal(response.status, 200);
+  response = await request(app)
+    .post("/api/posts")
+    .set("Cookie", cookie)
+    .send({ title: "Allowed after change", content: "Password changed" });
+  assert.equal(response.status, 201);
+});
+
+test("temporary passwords from password reset also require a change", async () => {
+  const target = await addUser("writer", "Reset target");
+  const reset = await as(
+    users.admin,
+    { method: "post" },
+    `/api/users/${target.id}/reset-password`,
+  );
+  assert.equal(reset.status, 200);
+  const cookie = cookieFor(target);
+  const blocked = await request(app).get("/api/posts").set("Cookie", cookie);
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.body.error.code, "PASSWORD_CHANGE_REQUIRED");
+});
+
+test("audit rows are persisted for user creation and post transitions", async () => {
+  const post = await addPost(users.writer, "draft", "audit-transition");
+  const transition = await as(
+    users.writer,
+    { method: "patch" },
+    `/api/posts/${post.id}/submit`,
+  );
+  assert.equal(transition.status, 200);
+  const created = await as(users.admin, { method: "post" }, "/api/users", {
+    name: "Audited writer",
+    email: nextEmail(),
+    role: "writer",
+  });
+  assert.equal(created.status, 201);
+  const [rows] = await pool.query(
+    "SELECT action FROM audit_logs WHERE entity_id = ? ORDER BY id",
+    [post.id],
+  );
+  assert.ok(rows.some((row) => row.action === "post_submit"));
+});
+
+test("SQL injection strings are parameterized and sort columns are allowlisted", async () => {
+  const injection = "' OR 1=1 --";
+  const search = await as(users.editor, { method: "get" }, "/api/posts").query({
+    search: injection,
+  });
+  assert.equal(search.status, 200);
+
+  const unsafeSort = await as(
+    users.editor,
+    { method: "get" },
+    "/api/posts",
+  ).query({ sort: "title DESC, (SELECT SLEEP(1))" });
+  assert.equal(unsafeSort.status, 400);
+
+  const publicSearch = await request(app)
+    .get("/api/posts/public")
+    .query({ search: injection });
+  assert.equal(publicSearch.status, 200);
+  const [tableRows] = await pool.query(
+    "SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'users'",
+  );
+  assert.equal(Number(tableRows[0].count), 1);
+});
+
+test("XSS-looking post content is returned as plain text", async () => {
+  const content = '<img src=x onerror="alert(1)"><script>alert(2)</script>';
+  const post = await addPost(users.writer, "published", "xss-plain-text");
+  await pool.query("UPDATE posts SET content = ? WHERE id = ?", [
+    content,
+    post.id,
+  ]);
+  const response = await request(app).get(`/api/posts/public/${post.slug}`);
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.content, content);
+});
+
+test("write rate limiter returns 429 when limiters are enabled in test mode", async () => {
+  const limitedApp = createApp({ enableRateLimits: true });
+  for (let index = 0; index < 60; index += 1) {
+    const response = await request(limitedApp).post("/api/posts").send({});
+    assert.equal(response.status, 401, `write request ${index + 1}`);
+  }
+  const limited = await request(limitedApp).post("/api/posts").send({});
+  assert.equal(limited.status, 429);
+});
+
+test("dummy bcrypt hash is valid and unknown-email timing matches wrong-password timing", async () => {
+  const dummyHash = authService.DUMMY_PASSWORD_HASH;
+  assert.equal(dummyHash.length, 60);
+  assert.match(dummyHash, /^\$2[aby]\$12\$/);
+  assert.equal(
+    await bcrypt.compare("not-the-dummy-password", dummyHash),
+    false,
+  );
+
+  async function measure(email) {
+    const started = performance.now();
+    await assert.rejects(
+      authService.login(email, "Wrong-Password-53"),
+      (error) => error.status === 401,
+    );
+    return performance.now() - started;
+  }
+
+  const known = [];
+  const unknown = [];
+  for (let index = 0; index < 6; index += 1) {
+    known.push(await measure(users.writer.email));
+    unknown.push(await measure(`${emailPrefix}-absent-${index}@example.com`));
+  }
+  const median = (values) => {
+    const sorted = [...values].sort((left, right) => left - right);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+  const knownMedian = median(known);
+  const unknownMedian = median(unknown);
+  const toleranceMs = Math.max(300, knownMedian * 0.75);
+  assert.ok(
+    Math.abs(knownMedian - unknownMedian) <= toleranceMs,
+    `timing medians differ too much: known=${knownMedian.toFixed(1)}ms, unknown=${unknownMedian.toFixed(1)}ms, tolerance=${toleranceMs.toFixed(1)}ms`,
+  );
+  process.stdout.write(
+    `login timing medians: wrong-password=${knownMedian.toFixed(1)}ms, unknown-email=${unknownMedian.toFixed(1)}ms, tolerance=${toleranceMs.toFixed(1)}ms\n`,
+  );
+});

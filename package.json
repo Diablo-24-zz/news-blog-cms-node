@@ -1,0 +1,36 @@
+{
+  "name": "news-cms",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A role-aware news and blog CMS built with Express and MySQL.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "setup-db": "node scripts/setup-databases.js",
+    "create-super-admin": "node scripts/create-super-admin.js",
+    "seed-demo": "node scripts/seed-demo.js",
+    "test": "node --test",
+    "lint": "eslint .",
+    "format": "prettier --check ."
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.1.0",
+    "joi": "^17.13.3",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "mysql2": "^3.12.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.17.0",
+    "prettier": "^3.4.2",
+    "supertest": "^7.0.0"
+  }
+}
