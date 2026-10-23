@@ -507,7 +507,7 @@ test("login rejects passwords longer than 72 UTF-8 bytes", async () => {
   const tooLongAscii = await request(app)
     .post("/api/auth/login")
     .send({
-      email: users.writer.email,
+      email: nextEmail(),
       password: "a".repeat(73),
     });
   assert.equal(tooLongAscii.status, 400);
@@ -515,7 +515,7 @@ test("login rejects passwords longer than 72 UTF-8 bytes", async () => {
   const tooLongUnicode = await request(app)
     .post("/api/auth/login")
     .send({
-      email: users.writer.email,
+      email: nextEmail(),
       password: "😀".repeat(19),
     });
   assert.equal(tooLongUnicode.status, 400);
@@ -523,7 +523,7 @@ test("login rejects passwords longer than 72 UTF-8 bytes", async () => {
   const withinByteLimit = await request(app)
     .post("/api/auth/login")
     .send({
-      email: users.writer.email,
+      email: nextEmail(),
       password: "😀".repeat(18),
     });
   assert.equal(withinByteLimit.status, 401);
