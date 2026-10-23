@@ -89,9 +89,14 @@ router.get(
 
 router.get(
   "/public/:slug",
-  asyncHandler(async (req, res) =>
-    sendData(res, await postService.getPublicBySlug(req.params.slug)),
-  ),
+  asyncHandler(async (req, res) => {
+    const post = await postService.getPublicBySlug(
+      req.params.slug,
+      req.ip,
+      req.get("user-agent") || "",
+    );
+    return sendData(res, post);
+  }),
 );
 
 router.use(authenticate, requirePasswordChanged);

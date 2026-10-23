@@ -1,7 +1,7 @@
 process.env.NODE_ENV = "test";
 
 const assert = require("node:assert/strict");
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const { performance } = require("node:perf_hooks");
 const { after, before, test } = require("node:test");
 const bcrypt = require("bcrypt");
@@ -640,6 +640,56 @@ test("public endpoints hide unpublished, deleted, and future-scheduled posts", a
   });
   assert.equal(list.status, 200);
   assert.equal(list.body.data.length, 0);
+  const [viewRows] = await pool.query(
+    "SELECT post_id FROM post_views WHERE post_id IN (?, ?, ?)",
+    [draft.id, deleted.id, future.id],
+  );
+  assert.equal(viewRows.length, 0);
+});
+
+test("public views count once per visitor and post per UTC day", async () => {
+  const post = await addPost(users.writer, "published", "daily-view-count");
+  const sameVisitor = () =>
+    request(app)
+      .get(`/api/posts/public/${post.slug}`)
+      .set("User-Agent", "daily-view-test-agent");
+  const concurrent = await Promise.all([sameVisitor(), sameVisitor()]);
+  assert.deepEqual(
+    concurrent.map((response) => response.status),
+    [200, 200],
+  );
+  assert.deepEqual(
+    concurrent.map((response) => response.body.data.views),
+    [1, 1],
+  );
+
+  const repeat = await sameVisitor();
+  assert.equal(repeat.body.data.views, 1);
+  const otherVisitor = await request(app)
+    .get(`/api/posts/public/${post.slug}`)
+    .set("User-Agent", "different-view-test-agent");
+  assert.equal(otherVisitor.body.data.views, 2);
+
+  const [views] = await pool.query(
+    "SELECT visitor_hash, view_date FROM post_views WHERE post_id = ?",
+    [post.id],
+  );
+  assert.equal(views.length, 2);
+  for (const view of views) {
+    assert.match(view.visitor_hash, /^[a-f0-9]{64}$/);
+    assert.equal(view.visitor_hash.includes("daily-view-test-agent"), false);
+  }
+  const [postRows] = await pool.query("SELECT views FROM posts WHERE id = ?", [
+    post.id,
+  ]);
+  assert.equal(Number(postRows[0].views), 2);
+
+  const expectedHashes = ["::ffff:127.0.0.1", "127.0.0.1"].map((ip) =>
+    createHash("sha256")
+      .update(`${ip}daily-view-test-agent${config.JWT_SECRET}`)
+      .digest("hex"),
+  );
+  assert.ok(views.some((view) => expectedHashes.includes(view.visitor_hash)));
 });
 
 test("restoring a soft-deleted post preserves its prior workflow status", async () => {

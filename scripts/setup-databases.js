@@ -58,6 +58,7 @@ async function main() {
         "categories",
         "tags",
         "posts",
+        "post_views",
         "post_tags",
         "post_revisions",
         "audit_logs",

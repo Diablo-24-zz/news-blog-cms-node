@@ -59,6 +59,14 @@ CREATE TABLE posts (
   CONSTRAINT fk_posts_reviewer FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE post_views (
+  post_id INT UNSIGNED NOT NULL,
+  visitor_hash CHAR(64) NOT NULL,
+  view_date DATE NOT NULL,
+  UNIQUE KEY uq_post_views_visitor_day (post_id, visitor_hash, view_date),
+  CONSTRAINT fk_post_views_post FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE post_tags (
   post_id INT UNSIGNED NOT NULL,
   tag_id INT UNSIGNED NOT NULL,

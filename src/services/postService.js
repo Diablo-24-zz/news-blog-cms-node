@@ -1,4 +1,6 @@
+const crypto = require("node:crypto");
 const { getPool, withTransaction } = require("../config/db");
+const { loadConfig } = require("../config/env");
 const { isAtLeast } = require("../utils/roles");
 const { writeAudit } = require("../utils/audit");
 const {
@@ -544,22 +546,42 @@ async function listPublic(query) {
   };
 }
 
-async function getPublicBySlug(slug) {
-  const [update] = await getPool().query(
-    `UPDATE posts SET views = views + 1
-      WHERE slug = ? AND status = 'published' AND published_at <= UTC_TIMESTAMP() AND deleted_at IS NULL`,
-    [slug],
-  );
-  if (update.affectedRows !== 1) throw notFound("Post not found");
-  const [rows] = await getPool().query(
-    `SELECT p.id, p.author_id, p.category_id, p.title, p.slug, p.content, p.cover_image,
+async function getPublicBySlug(slug, ip, userAgent) {
+  const visitorHash = crypto
+    .createHash("sha256")
+    .update(`${ip}${userAgent}${loadConfig().JWT_SECRET}`)
+    .digest("hex");
+  return withTransaction(async (connection) => {
+    const [eligiblePosts] = await connection.query(
+      `SELECT id FROM posts
+        WHERE slug = ? AND status = 'published' AND published_at <= UTC_TIMESTAMP() AND deleted_at IS NULL
+        FOR UPDATE`,
+      [slug],
+    );
+    if (eligiblePosts.length !== 1) throw notFound("Post not found");
+
+    const postId = eligiblePosts[0].id;
+    const [view] = await connection.query(
+      "INSERT IGNORE INTO post_views (post_id, visitor_hash, view_date) VALUES (?, ?, UTC_DATE())",
+      [postId, visitorHash],
+    );
+    if (view.affectedRows === 1) {
+      await connection.query(
+        "UPDATE posts SET views = views + 1 WHERE id = ?",
+        [postId],
+      );
+    }
+
+    const [rows] = await connection.query(
+      `SELECT p.id, p.author_id, p.category_id, p.title, p.slug, p.content, p.cover_image,
             p.status, p.published_at, p.views, p.created_at, p.updated_at,
             u.name AS author_name, c.name AS category_name, c.slug AS category_slug
        FROM posts p JOIN users u ON u.id = p.author_id LEFT JOIN categories c ON c.id = p.category_id
       WHERE p.slug = ? AND p.status = 'published' AND p.published_at <= UTC_TIMESTAMP() AND p.deleted_at IS NULL`,
-    [slug],
-  );
-  return publicPost(rows[0], await tagsForPost(rows[0].id));
+      [slug],
+    );
+    return publicPost(rows[0], await tagsForPost(postId, connection));
+  });
 }
 
 module.exports = {
